@@ -9,7 +9,7 @@ import io
 import torchtext
 import torchtext.data as data
 
-def load_data(device='cpu', batch_size=32, bptt_len=35, path_to_data="../data",
+def load_data(embeddings=None, device='cpu', batch_size=32, bptt_len=35, path_to_data="../data",
         train = "02-21.10way.clean", valid = "22.auto.clean",
         test = "23.auto.clean", bos_token='<bos>'):
     """
@@ -38,9 +38,12 @@ def load_data(device='cpu', batch_size=32, bptt_len=35, path_to_data="../data",
         example = data.Example.fromlist([example], fields)
         dataset = data.Dataset([example], fields)
         splits.append(dataset)
-   
-    
-    TEXT.build_vocab(*splits, specials=['<unk>','<pad>','<bos>'])
+  
+    specials = ['<unk>', '<pad>', bos_token]
+    if embeddings:
+        TEXT.build_vocab(*splits, vectors=embeddings, specials=specials)
+    else:
+        TEXT.build_vocab(*splits, specials=specials)
 
     train, valid, test = splits
     train_iter, valid_iter, test_iter = data.BPTTIterator.splits(
@@ -51,14 +54,14 @@ def load_data(device='cpu', batch_size=32, bptt_len=35, path_to_data="../data",
             repeat = False
         )
 
-    return train_iter, valid_iter, test_iter 
+    return train_iter, valid_iter, test_iter, TEXT.vocab
 
 
 if __name__ == "__main__":
 
     print("Testing dataloader.")
 
-    train_iter, valid_iter, test_iter = load_data()
+    train_iter, valid_iter, test_iter, vocab = load_data()
 
     for i, batch in enumerate(valid_iter):
         print(batch)

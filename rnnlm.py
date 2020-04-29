@@ -21,7 +21,7 @@ class RNNLM(nn.Module):
         self.fc = nn.Linear(hidden_dim, self.NUM_CLASSES)
 
 
-    def forward(self, sentences, lengths):
+    def forward(self, x):
         """
         Args:
             x : vectors that represent the sentence     S x B x E
@@ -30,15 +30,9 @@ class RNNLM(nn.Module):
             
         """
 
-        B, S, D = sentences.shape
+        S, B, D = x.shape
 
-        packed = nn.utils.rnn.pack_padded_sequence(
-            sentences, 
-            lengths
-            #enforce_sorted=False
-        )
-
-        _, h_n = self.gru(packed)
+        _, h_n = self.gru(x)
         
         y = self.fc(h_n)    
 

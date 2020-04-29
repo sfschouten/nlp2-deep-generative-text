@@ -1,2 +1,9 @@
 *~ 
 *.swp
+
+runs/
+
+__pycache__/
+
+.vector_cache/
+.ipynb_checkpoints/
