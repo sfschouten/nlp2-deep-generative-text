@@ -6,9 +6,8 @@ import torch.nn.functional as F
 class RNNLM(nn.Module):
 
     NUM_LAYERS = 1
-    NUM_CLASSES = 3
 
-    def __init__(self, input_dim, hidden_dim, dropout=0):
+    def __init__(self, input_dim, hidden_dim, num_classes, dropout=0):
         super(RNNLM, self).__init__()
 
         self.gru = nn.GRU(
@@ -18,8 +17,8 @@ class RNNLM(nn.Module):
                 dropout = dropout
             )
 
-        self.fc = nn.Linear(hidden_dim, self.NUM_CLASSES)
-
+        self.fc = nn.Linear(hidden_dim, num_classes)
+        self.sm = nn.LogSoftmax(dim=2)
 
     def forward(self, x):
         """
@@ -29,11 +28,9 @@ class RNNLM(nn.Module):
         Returns:
             
         """
+        S, B, E = x.shape
 
-        S, B, D = x.shape
-
-        _, h_n = self.gru(x)
-        
-        y = self.fc(h_n)    
-
-        return F.softmax(y)
+        out, _ = self.gru(x)    # S x B x H
+        y = self.fc(out)        # S x B x C
+        y = self.sm(y)
+        return y 

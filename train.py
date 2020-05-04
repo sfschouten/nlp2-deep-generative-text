@@ -40,21 +40,26 @@ def train(config, sw):
     # Initialize the device which to run the model on
     device = torch.device(config.device)
 
-    #embeds = torchtext.vocab.FastText()
-    embeds = torchtext.vocab.GloVe()
+    vocab = torchtext.vocab.FastText()
+    #vocab = torchtext.vocab.GloVe()
 
     # get data iterators
     train_iter, valid_iter, test_iter, vocab = load_data(
-            embeddings=embeds, device=device, batch_size=config.batch_size)
+            embeddings=vocab, device=device, batch_size=config.batch_size)
 
+    print("vocab size: {}".format(vocab.vectors.shape))
 
     # Initialize the model that we are going to use
     if config.model == "rnnlm":
-        model = RNNLM(config.embed_dim, config.hidden_dim)
+        model = RNNLM(
+            config.embed_dim, 
+            config.hidden_dim,
+            vocab.vectors.shape[0]
+        )
     else: raise Error("Invalid model parameter.")
     model = model.to(device)
 
-
+    print("transferring embedding")
     # create embedding layer
     embedding = nn.Embedding.from_pretrained(vocab.vectors).to(device)
 
@@ -73,12 +78,11 @@ def train(config, sw):
 
             batch_text = embedding(batch.text.to(device))
             batch_target = batch.target.to(device)
-
             batch_output = model(batch_text)
-    
-            print(batch_output.shape)
-            print(batch_text.shape)
-            print(batch_target.shape)
+
+            # merge batch and sequence dimension for evaluation
+            batch_output = batch_output.view(-1, batch_output.shape[2])
+            batch_target = batch_target.view(-1)
 
             batch_acc = batch_output.argmax(dim=1).eq(batch_target).double().mean()
             loss = criterion(batch_output, batch_target)
@@ -101,10 +105,10 @@ def train(config, sw):
             if global_step == config.train_steps:
                 break
 
-        epoch_acc, epoch_loss = test_model(model, embedding, criterion, global_step, valid_iter, device) 
-        sw.add_scalar('Valid/Loss', epoch_loss, global_step)
-        sw.add_scalar('Valid/Accuracy', epoch_acc, global_step)
-        sw.flush()
+        #epoch_acc, epoch_loss = test_model(model, embedding, criterion, global_step, valid_iter, device) 
+        #sw.add_scalar('Valid/Loss', epoch_loss, global_step)
+        #sw.add_scalar('Valid/Accuracy', epoch_acc, global_step)
+        #sw.flush()
 
         scheduler.step() 
         
@@ -130,7 +134,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     # Model params
-    parser.add_argument('--model', required=True, choices=['rnnlm'], help="Which sentence encoder to use.")
+    parser.add_argument('--model', required=True, choices=['rnnlm'], default='rnnlm', help="Which sentence encoder to use.")
     parser.add_argument('--embed_dim', type=int, default=300, help="")
     parser.add_argument('--hidden_dim', type=int, default=512, help="")
     
