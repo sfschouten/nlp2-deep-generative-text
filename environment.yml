@@ -1,4 +1,4 @@
-name: gentxt 
+# name: gentxt 
 channels:
   - pytorch
   - defaults
