@@ -34,6 +34,24 @@ def save_model(label, model, config):
     )
     torch.save(model, name)
 
+def test_model(model, embedding, criterion, valid_iter, device):
+    loss = 0
+    batch_acc = 0
+    for step, batch in enumerate(valid_iter):
+
+        batch_input = embedding(batch.text.to(device))
+        batch_target = batch.target 
+
+        batch_output = model(batch_input)
+
+        # merge batch and sequence dimension for evaluation
+        batch_output = batch_output.view(-1, batch_output.shape[2])
+        batch_target = batch_target.view(-1)
+
+        batch_acc += batch_output.argmax(dim=1).eq(batch_target).double().mean()
+        loss += criterion(batch_output, batch_target).item()
+
+    return batch_acc/(step + 1), loss
 
 def train(config, sw):
 
@@ -70,11 +88,11 @@ def train(config, sw):
     
     scheduler = optim.lr_scheduler.StepLR(optimizer, 1, gamma=config.learning_rate_decay)
     lr = config.learning_rate
-   
+  
+    global_step = 0
     best_acc = 0
     for epoch in itertools.count():
-        for step, batch in enumerate(train_iter):
-            global_step = epoch * math.floor( len(train_iter.dataset) / config.batch_size ) + step
+        for batch in train_iter:
 
             batch_text = embedding(batch.text.to(device))
             batch_target = batch.target.to(device)
@@ -105,10 +123,12 @@ def train(config, sw):
             if global_step == config.train_steps:
                 break
 
-        #epoch_acc, epoch_loss = test_model(model, embedding, criterion, global_step, valid_iter, device) 
-        #sw.add_scalar('Valid/Loss', epoch_loss, global_step)
-        #sw.add_scalar('Valid/Accuracy', epoch_acc, global_step)
-        #sw.flush()
+            global_step += 1
+
+        epoch_acc, epoch_loss = test_model(model, embedding, criterion, valid_iter, device) 
+        sw.add_scalar('Valid/Loss', epoch_loss, global_step)
+        sw.add_scalar('Valid/Accuracy', epoch_acc, global_step)
+        sw.flush()
 
         scheduler.step() 
         
