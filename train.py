@@ -27,29 +27,31 @@ from rnnlm import RNNLM
 def save_model(label, model, config):
     name = "{}_{}e_{}h_{}_{}".format(
             config.model,
-            config.embed_dims,
-            config.hidden_dims,
+            config.embed_dim,
+            config.hidden_dim,
             label,
             config.save_file
     )
     torch.save(model, name)
 
 def test_model(model, embedding, criterion, valid_iter, device):
-    loss = 0
-    batch_acc = 0
-    for step, batch in enumerate(valid_iter):
+    with torch.no_grad():
+        model.eval()
+        loss = 0
+        batch_acc = 0
+        for step, batch in enumerate(valid_iter):
 
-        batch_input = embedding(batch.text.to(device))
-        batch_target = batch.target 
+            batch_input = embedding(batch.text.to(device))
+            batch_target = batch.target 
 
-        batch_output = model(batch_input)
+            batch_output = model(batch_input)
 
-        # merge batch and sequence dimension for evaluation
-        batch_output = batch_output.view(-1, batch_output.shape[2])
-        batch_target = batch_target.view(-1)
+            # merge batch and sequence dimension for evaluation
+            batch_output = batch_output.view(-1, batch_output.shape[2])
+            batch_target = batch_target.view(-1)
 
-        batch_acc += batch_output.argmax(dim=1).eq(batch_target).double().mean()
-        loss += criterion(batch_output, batch_target).item()
+            batch_acc += batch_output.argmax(dim=1).eq(batch_target).double().mean()
+            loss += criterion(batch_output, batch_target).item()
 
     return batch_acc/(step + 1), loss
 
@@ -65,7 +67,7 @@ def train(config, sw):
     train_iter, valid_iter, test_iter, vocab = load_data(
             embeddings=vocab, device=device, batch_size=config.batch_size)
 
-    print("vocab size: {}".format(vocab.vectors.shape))
+    print("Vocab size: {}".format(vocab.vectors.shape))
 
     # Initialize the model that we are going to use
     if config.model == "rnnlm":
@@ -77,7 +79,6 @@ def train(config, sw):
     else: raise Error("Invalid model parameter.")
     model = model.to(device)
 
-    print("transferring embedding")
     # create embedding layer
     embedding = nn.Embedding.from_pretrained(vocab.vectors).to(device)
 
@@ -93,7 +94,7 @@ def train(config, sw):
     best_acc = 0
     for epoch in itertools.count():
         for batch in train_iter:
-
+            model.train()
             batch_text = embedding(batch.text.to(device))
             batch_target = batch.target.to(device)
             batch_output = model(batch_text)
@@ -107,7 +108,7 @@ def train(config, sw):
         
             optimizer.zero_grad()
             loss.backward()
-            #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.max_norm)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.max_norm)
             optimizer.step()
 
             sw.add_scalar('Train/Loss', loss, global_step)
@@ -129,6 +130,9 @@ def train(config, sw):
         sw.add_scalar('Valid/Loss', epoch_loss, global_step)
         sw.add_scalar('Valid/Accuracy', epoch_acc, global_step)
         sw.flush()
+        
+        if epoch_acc > best_acc:
+            save_model("best", model, config)
 
         scheduler.step() 
         
