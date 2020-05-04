@@ -94,7 +94,6 @@ def train(config, sw):
     best_acc = 0
     for epoch in itertools.count():
         for batch in train_iter:
-            model.train()
             batch_text = embedding(batch.text.to(device))
             batch_target = batch.target.to(device)
             batch_output = model(batch_text)
@@ -127,6 +126,7 @@ def train(config, sw):
             global_step += 1
 
         epoch_acc, epoch_loss = test_model(model, embedding, criterion, valid_iter, device) 
+        model.train()
         sw.add_scalar('Valid/Loss', epoch_loss, global_step)
         sw.add_scalar('Valid/Accuracy', epoch_acc, global_step)
         sw.flush()
@@ -137,8 +137,6 @@ def train(config, sw):
         scheduler.step() 
         
         print("Learning Rate: {}".format([group['lr'] for group in optimizer.param_groups]))
-        if scheduler.get_last_lr()[0] < 0.00001 or global_step >= config.train_steps:
-            break
 
     print('Done training.')
 
@@ -158,20 +156,20 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     # Model params
-    parser.add_argument('--model', required=True, choices=['rnnlm'], default='rnnlm', help="Which sentence encoder to use.")
+    parser.add_argument('--model', choices=['rnnlm'], default='rnnlm', help="Which sentence encoder to use.")
     parser.add_argument('--embed_dim', type=int, default=300, help="")
     parser.add_argument('--hidden_dim', type=int, default=512, help="")
     
     # Training params
-    parser.add_argument('--batch_size', type=int, default=64, help='Number of samples to process in a batch')
-    parser.add_argument('--device', type=str, default="cuda:0", help="Training device 'cpu' or 'cuda:0'")
-    parser.add_argument('--learning_rate', type=float, default=0.1, help='Learning rate')
-    parser.add_argument('--learning_rate_decay', type=float, default=0.99, help='Learning rate decay fraction')
-    parser.add_argument('--train_steps', type=int, default=int(1e6), help='Number of training steps')
+    parser.add_argument('--batch_size', type=int, default=32, help='Number of samples to process in a batch')
+    parser.add_argument('--device', type=str, default="cuda", help="Training device 'cpu' or 'cuda:0'")
+    parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate')
+    parser.add_argument('--learning_rate_decay', type=float, default=0.95, help='Learning rate decay fraction')
+    parser.add_argument('--train_steps', type=int, default=int(15000), help='Number of training steps')
     parser.add_argument('--max_norm', type=float, default=5.0, help='Gradient clipping maximum norm.')
 
     # Misc params
-    parser.add_argument('--print_every', type=int, default=25, help='How often to print training progress')
+    parser.add_argument('--print_every', type=int, default=50, help='How often to print training progress')
     parser.add_argument('--sw_log_dir', type=str, default='runs', help='The directory in which to create the default logdir.')
     parser.add_argument('--save_file', type=str, default='model.pt', help='Filename under which to store the model.')
 
