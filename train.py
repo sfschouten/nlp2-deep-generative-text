@@ -37,7 +37,7 @@ def save_model(label, model, config):
 def test_model(model, embedding, criterion, valid_iter, device):
     with torch.no_grad():
         model.eval()
-        loss = 0
+        nll = 0
         batch_acc = 0
         for step, batch in enumerate(valid_iter):
 
@@ -51,10 +51,10 @@ def test_model(model, embedding, criterion, valid_iter, device):
             batch_target = batch_target.view(-1)
 
             batch_acc += batch_output.argmax(dim=1).eq(batch_target).double().mean()
-            loss += criterion(batch_output, batch_target).item()
+            nll += criterion(batch_output, batch_target).item()
 
-    loss_per_sample = loss / (step * valid_iter.batch_size) 
-    return batch_acc/(step + 1), loss_per_sample 
+    nll_per_sample = nll / (step * valid_iter.batch_size) 
+    return batch_acc/(step + 1), nll_per_sample 
 
 def train(config, sw):
 
@@ -142,7 +142,7 @@ def train(config, sw):
         epoch_acc, epoch_loss = test_model(model, embedding, criterion, valid_iter, device) 
         print("Valid Loss: {}".format(epoch_loss))
         model.train()
-        sw.add_scalar('Valid/Loss', epoch_loss, global_step)
+        sw.add_scalar('Valid/NLL', epoch_loss, global_step)
         sw.add_scalar('Valid/Accuracy', epoch_acc, global_step)
         sw.flush()
         
@@ -159,7 +159,7 @@ def train(config, sw):
     print('Done training.')
 
     epoch_acc, epoch_loss = test_model(model, embedding, criterion, test_iter, device)
-    print("Test Loss: {}".format(epoch_loss))
+    print("Test NLL: {}".format(epoch_loss))
 
     return model
 
