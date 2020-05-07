@@ -28,12 +28,19 @@ def load_data(embeddings=None, device='cpu', batch_size=32, bptt_len=35, path_to
         path = os.path.join(path_to_data, f)
        
         # remove POS tags and concatenate into one list for language modelling.
+        nr_lines = 0
+        total_tokens = 0
         example = []
         with io.open(path, encoding='utf-8') as f:
             for line in f:
+                nr_lines += 1
                 tokens = [bos_token] + re.sub(r"\([0-9] |\)", "", line).split()
                 tokens = [token for token in tokens if not token.startswith('(')]
+                total_tokens += len(tokens)
                 example.extend(tokens)
+
+        avg_length = total_tokens / nr_lines
+        print("Average Sentence Length: {}".format(avg_length))
 
         example = data.Example.fromlist([example], fields)
         dataset = data.Dataset([example], fields)

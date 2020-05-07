@@ -21,7 +21,7 @@ from torch.utils.tensorboard import SummaryWriter
 from dataloader import load_data
 
 from rnnlm import RNNLM
-
+from sentence_vae import SentenceVAE
 ################################################################################
 
 def save_model(label, model, config):
@@ -53,7 +53,8 @@ def test_model(model, embedding, criterion, valid_iter, device):
             batch_acc += batch_output.argmax(dim=1).eq(batch_target).double().mean()
             loss += criterion(batch_output, batch_target).item()
 
-    return batch_acc/(step + 1), loss
+    loss_per_sample = loss / (step * valid_iter.batch_size) 
+    return batch_acc/(step + 1), loss_per_sample 
 
 def train(config, sw):
 
@@ -65,16 +66,27 @@ def train(config, sw):
 
     # get data iterators
     train_iter, valid_iter, test_iter, vocab = load_data(
-            embeddings=vocab, device=device, batch_size=config.batch_size)
+            embeddings=vocab, 
+            device=device, 
+            batch_size=config.batch_size,
+            bptt_len=config.seq_len
+        )
 
     print("Vocab size: {}".format(vocab.vectors.shape))
 
+    num_classes = vocab.vectors.shape[0]
     # Initialize the model that we are going to use
     if config.model == "rnnlm":
         model = RNNLM(
             config.embed_dim, 
             config.hidden_dim,
-            vocab.vectors.shape[0]
+            num_classes
+        )
+    elif config.model == "s-vae":
+        model = SentenceVAE(
+            config.embed_dim,
+            config.hidden_dim,
+            num_classes
         )
     else: raise Error("Invalid model parameter.")
     model = model.to(device)
@@ -84,9 +96,8 @@ def train(config, sw):
 
 
     # Setup the loss, optimizer, lr-scheduler
-    criterion = torch.nn.NLLLoss().to(config.device)
     optimizer = optim.Adam(model.parameters(), lr=config.learning_rate) 
-    
+    criterion = torch.nn.NLLLoss(reduction="sum").to(config.device)
     scheduler = optim.lr_scheduler.StepLR(optimizer, 1, gamma=config.learning_rate_decay)
     lr = config.learning_rate
   
@@ -94,7 +105,7 @@ def train(config, sw):
     best_acc = 0
     for epoch in itertools.count():
         for batch in train_iter:
-            batch_text = embedding(batch.text.to(device))
+            batch_text = embedding(batch.text.to(device))   # 
             batch_target = batch.target.to(device)
             batch_output = model(batch_text)
 
@@ -104,12 +115,18 @@ def train(config, sw):
 
             batch_acc = batch_output.argmax(dim=1).eq(batch_target).double().mean()
             loss = criterion(batch_output, batch_target)
-        
+            sw.add_scalar('Train/NLL', loss.item(), global_step)
+
+            if hasattr(model, 'additional_loss'):
+                loss += model.additional_loss
+                sw.add_scalar('Train/KL-divergence', model.additional_loss.item(), global_step)
+
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.max_norm)
             optimizer.step()
 
+            loss = loss.item() / config.batch_size
             sw.add_scalar('Train/Loss', loss, global_step)
             sw.add_scalar('Train/Accuracy', batch_acc, global_step)
 
@@ -120,12 +137,10 @@ def train(config, sw):
                         config.train_steps, batch_acc, loss
                 ), flush=True)
             
-            if global_step == config.train_steps:
-                break
-
             global_step += 1
-
+            
         epoch_acc, epoch_loss = test_model(model, embedding, criterion, valid_iter, device) 
+        print("Valid Loss: {}".format(epoch_loss))
         model.train()
         sw.add_scalar('Valid/Loss', epoch_loss, global_step)
         sw.add_scalar('Valid/Accuracy', epoch_acc, global_step)
@@ -133,12 +148,18 @@ def train(config, sw):
         
         if epoch_acc > best_acc:
             save_model("best", model, config)
+        
+        if global_step >= config.train_steps:
+                break
 
         scheduler.step() 
-        
         print("Learning Rate: {}".format([group['lr'] for group in optimizer.param_groups]))
 
+
     print('Done training.')
+
+    epoch_acc, epoch_loss = test_model(model, embedding, criterion, test_iter, device)
+    print("Test Loss: {}".format(epoch_loss))
 
     return model
 
@@ -156,7 +177,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     # Model params
-    parser.add_argument('--model', choices=['rnnlm'], default='rnnlm', help="Which sentence encoder to use.")
+    parser.add_argument('--model', choices=['rnnlm', 's-vae'], default='rnnlm', help="Which sentence encoder to use.")
     parser.add_argument('--embed_dim', type=int, default=300, help="")
     parser.add_argument('--hidden_dim', type=int, default=512, help="")
     
@@ -165,8 +186,9 @@ if __name__ == "__main__":
     parser.add_argument('--device', type=str, default="cuda", help="Training device 'cpu' or 'cuda:0'")
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate')
     parser.add_argument('--learning_rate_decay', type=float, default=0.95, help='Learning rate decay fraction')
-    parser.add_argument('--train_steps', type=int, default=int(15000), help='Number of training steps')
+    parser.add_argument('--train_steps', type=int, default=int(5000), help='Number of training steps')
     parser.add_argument('--max_norm', type=float, default=5.0, help='Gradient clipping maximum norm.')
+    parser.add_argument('--seq_len', type=int, default=int(35), help='The length of the sequences to train on.')
 
     # Misc params
     parser.add_argument('--print_every', type=int, default=50, help='How often to print training progress')
