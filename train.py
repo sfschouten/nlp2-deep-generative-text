@@ -4,6 +4,7 @@ import time
 import argparse
 import itertools
 import math
+import pprint
 
 from datetime import datetime
 
@@ -22,6 +23,8 @@ from dataloader import load_data
 
 from rnnlm import RNNLM
 from sentence_vae import SentenceVAE
+
+
 ################################################################################
 
 def save_model(label, model, config):
@@ -74,6 +77,9 @@ def train(config, sw):
 
     print("Vocab size: {}".format(vocab.vectors.shape))
 
+    # create embedding layer
+    embedding = nn.Embedding.from_pretrained(vocab.vectors).to(device)
+
     num_classes = vocab.vectors.shape[0]
     # Initialize the model that we are going to use
     if config.model == "rnnlm":
@@ -86,14 +92,14 @@ def train(config, sw):
         model = SentenceVAE(
             config.embed_dim,
             config.hidden_dim,
-            num_classes
+            num_classes,
+            fb_lambda = config.freebits_lambda, 
+            fb_K = config.freebits_k, 
+            wd_keep_prob = config.wdropout_prob, 
+            wd_unk = embedding(torch.LongTensor([vocab.stoi["<unk>"]]).to(device))
         )
     else: raise Error("Invalid model parameter.")
     model = model.to(device)
-
-    # create embedding layer
-    embedding = nn.Embedding.from_pretrained(vocab.vectors).to(device)
-
 
     # Setup the loss, optimizer, lr-scheduler
     optimizer = optim.Adam(model.parameters(), lr=config.learning_rate) 
@@ -109,16 +115,17 @@ def train(config, sw):
             batch_target = batch.target.to(device)
             batch_output = model(batch_text)
 
+            B = batch_text.shape[1]
             # merge batch and sequence dimension for evaluation
             batch_output = batch_output.view(-1, batch_output.shape[2])
             batch_target = batch_target.view(-1)
 
             batch_acc = batch_output.argmax(dim=1).eq(batch_target).double().mean()
-            loss = criterion(batch_output, batch_target)
+            loss = criterion(batch_output, batch_target) / B
             sw.add_scalar('Train/NLL', loss.item(), global_step)
 
             if hasattr(model, 'additional_loss'):
-                loss += model.additional_loss
+                loss += model.additional_loss / B
                 sw.add_scalar('Train/KL-divergence', model.additional_loss.item(), global_step)
 
             optimizer.zero_grad()
@@ -126,7 +133,6 @@ def train(config, sw):
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.max_norm)
             optimizer.step()
 
-            loss = loss.item() / config.batch_size
             sw.add_scalar('Train/Loss', loss, global_step)
             sw.add_scalar('Train/Accuracy', batch_acc, global_step)
 
@@ -139,10 +145,10 @@ def train(config, sw):
             
             global_step += 1
             
-        epoch_acc, epoch_loss = test_model(model, embedding, criterion, valid_iter, device) 
-        print("Valid Loss: {}".format(epoch_loss))
+        epoch_acc, epoch_nll = test_model(model, embedding, criterion, valid_iter, device) 
+        print("Valid NLL: {}".format(epoch_nll))
         model.train()
-        sw.add_scalar('Valid/NLL', epoch_loss, global_step)
+        sw.add_scalar('Valid/NLL', epoch_nll, global_step)
         sw.add_scalar('Valid/Accuracy', epoch_acc, global_step)
         sw.flush()
         
@@ -158,8 +164,8 @@ def train(config, sw):
 
     print('Done training.')
 
-    epoch_acc, epoch_loss = test_model(model, embedding, criterion, test_iter, device)
-    print("Test NLL: {}".format(epoch_loss))
+    epoch_acc, epoch_nll = test_model(model, embedding, criterion, test_iter, device)
+    print("Test NLL: {}".format(epoch_nll))
 
     return model
 
@@ -180,15 +186,20 @@ if __name__ == "__main__":
     parser.add_argument('--model', choices=['rnnlm', 's-vae'], default='rnnlm', help="Which sentence encoder to use.")
     parser.add_argument('--embed_dim', type=int, default=300, help="")
     parser.add_argument('--hidden_dim', type=int, default=512, help="")
-    
+   
+    parser.add_argument('--freebits_k', type=int, default=8, help="")
+    parser.add_argument('--freebits_lambda', type=float, default=0, help="")
+
+    parser.add_argument('--wdropout_prob', type=float, default=1, help="")
+
     # Training params
     parser.add_argument('--batch_size', type=int, default=32, help='Number of samples to process in a batch')
     parser.add_argument('--device', type=str, default="cuda", help="Training device 'cpu' or 'cuda:0'")
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate')
     parser.add_argument('--learning_rate_decay', type=float, default=0.95, help='Learning rate decay fraction')
-    parser.add_argument('--train_steps', type=int, default=int(5000), help='Number of training steps')
+    parser.add_argument('--train_steps', type=int, default=int(10000), help='Number of training steps')
     parser.add_argument('--max_norm', type=float, default=5.0, help='Gradient clipping maximum norm.')
-    parser.add_argument('--seq_len', type=int, default=int(35), help='The length of the sequences to train on.')
+    parser.add_argument('--seq_len', type=int, default=int(25), help='The length of the sequences to train on.')
 
     # Misc params
     parser.add_argument('--print_every', type=int, default=50, help='How often to print training progress')
@@ -197,7 +208,8 @@ if __name__ == "__main__":
 
     config = parser.parse_args()
 
-    print(config)
+    pp = pprint.PrettyPrinter(indent=4)
+    pp.pprint(config)
 
     # summarywriter 
     logdir = logloc(dir_name=config.sw_log_dir)
