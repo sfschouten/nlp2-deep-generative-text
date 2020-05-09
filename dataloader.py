@@ -21,47 +21,72 @@ def load_data(embeddings=None, device='cpu', batch_size=32, bptt_len=35, path_to
     # already tokenized so use identity function
     TEXT = data.Field(lower=True, tokenize=lambda x:x)
     fields = [("text", TEXT)]
-    
+   
+    print("Loading data...")
+
     # extract sentences from files; turn into examples
-    splits = []
+    splits_langmodel = []
+    splits_sentences = []
     for f in [train, valid, test]:
         path = os.path.join(path_to_data, f)
        
         # remove POS tags and concatenate into one list for language modelling.
         nr_lines = 0
         total_tokens = 0
-        example = []
+        lm_example = []
+        s_examples = []
         with io.open(path, encoding='utf-8') as f:
             for line in f:
                 nr_lines += 1
                 tokens = [bos_token] + re.sub(r"\([0-9] |\)", "", line).split()
                 tokens = [token for token in tokens if not token.startswith('(')]
                 total_tokens += len(tokens)
-                example.extend(tokens)
+                lm_example.extend(tokens)
+                s_examples.append(tokens)
 
         avg_length = total_tokens / nr_lines
         print("Average Sentence Length: {}".format(avg_length))
 
-        example = data.Example.fromlist([example], fields)
-        dataset = data.Dataset([example], fields)
-        splits.append(dataset)
+        # The language model datasets are one big example with all sentences.
+        lm_example = data.Example.fromlist([lm_example], fields)
+        dataset = data.Dataset([lm_example], fields)
+        splits_langmodel.append(dataset)
+
+        # 
+        examples = [ data.Example.fromlist([tokens], fields) for tokens in s_examples ]
+        dataset = data.Dataset(examples, fields)
+        splits_sentences.append(dataset)
+
+    print("Done loading.")
   
     specials = ['<unk>', '<pad>', bos_token]
     if embeddings:
-        TEXT.build_vocab(*splits, vectors=embeddings, specials=specials)
+        TEXT.build_vocab(*splits_langmodel, vectors=embeddings, specials=specials)
     else:
-        TEXT.build_vocab(*splits, specials=specials)
+        TEXT.build_vocab(*splits_langmodel, specials=specials)
 
-    train, valid, test = splits
-    train_iter, valid_iter, test_iter = data.BPTTIterator.splits(
+    train, valid, test = splits_langmodel
+    lm_train_iter, lm_valid_iter, lm_test_iter = data.BPTTIterator.splits(
             (train, valid, test),
             batch_size = batch_size,
             bptt_len = bptt_len,
-            device = device,
-            repeat = False
+            shuffle = True,
+            device = device
         )
 
-    return train_iter, valid_iter, test_iter, TEXT.vocab
+    #TODO create labels for these dataiterators?
+
+    train, valid, test = splits_sentences
+    s_train_iter, s_valid_iter, s_test_iter = data.BucketIterator.splits(
+            (train, valid, test),
+            batch_size = batch_size,
+            shuffle = True,
+            device = device
+        )
+
+    return (lm_train_iter, lm_valid_iter, lm_test_iter), \
+           (s_train_iter, s_valid_iter, s_test_iter), \
+           TEXT.vocab
 
 
 if __name__ == "__main__":

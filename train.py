@@ -59,6 +59,7 @@ def test_model(model, embedding, criterion, valid_iter, device):
     nll_per_sample = nll / (step * valid_iter.batch_size) 
     return batch_acc/(step + 1), nll_per_sample 
 
+
 def train(config, sw):
 
     # Initialize the device which to run the model on
@@ -68,12 +69,15 @@ def train(config, sw):
     #vocab = torchtext.vocab.GloVe()
 
     # get data iterators
-    train_iter, valid_iter, test_iter, vocab = load_data(
+    lm_iters, s_iters, vocab = load_data(
             embeddings=vocab, 
             device=device, 
             batch_size=config.batch_size,
             bptt_len=config.seq_len
         )
+    #train_iter, _, _ = lm_iters
+    #_, valid_iter, test_iter = s_iters
+    train_iter, valid_iter, test_iter = lm_iters
 
     print("Vocab size: {}".format(vocab.vectors.shape))
 
@@ -94,7 +98,6 @@ def train(config, sw):
             config.hidden_dim,
             num_classes,
             fb_lambda = config.freebits_lambda, 
-            fb_K = config.freebits_k, 
             wd_keep_prob = config.wdropout_prob, 
             wd_unk = embedding(torch.LongTensor([vocab.stoi["<unk>"]]).to(device))
         )
@@ -125,8 +128,9 @@ def train(config, sw):
             sw.add_scalar('Train/NLL', loss.item(), global_step)
 
             if hasattr(model, 'additional_loss'):
-                loss += model.additional_loss / B
-                sw.add_scalar('Train/KL-divergence', model.additional_loss.item(), global_step)
+                kl = model.additional_loss
+                loss += kl
+                sw.add_scalar('Train/KL-divergence', kl, global_step)
 
             optimizer.zero_grad()
             loss.backward()
@@ -183,14 +187,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     # Model params
-    parser.add_argument('--model', choices=['rnnlm', 's-vae'], default='rnnlm', help="Which sentence encoder to use.")
-    parser.add_argument('--embed_dim', type=int, default=300, help="")
-    parser.add_argument('--hidden_dim', type=int, default=512, help="")
+    parser.add_argument('--model', choices=['rnnlm', 's-vae'], default='rnnlm', help="Which model to train.")
+    parser.add_argument('--embed_dim', type=int, default=300, help="The amount of dimensions of the word embeddings.")
+    parser.add_argument('--hidden_dim', type=int, default=512, help="The amount of hidden dimensions.")
    
-    parser.add_argument('--freebits_k', type=int, default=8, help="")
     parser.add_argument('--freebits_lambda', type=float, default=0, help="")
-
     parser.add_argument('--wdropout_prob', type=float, default=1, help="")
+    parser.add_argument('--mu_forcing_beta', type=float, default=0, help="")
 
     # Training params
     parser.add_argument('--batch_size', type=int, default=32, help='Number of samples to process in a batch')
@@ -212,7 +215,8 @@ if __name__ == "__main__":
     pp.pprint(config)
 
     # summarywriter 
-    logdir = logloc(dir_name=config.sw_log_dir)
+    comment = "_fblambda={}_wdropout={}".format(config.freebits_lambda, config.wdropout_prob)
+    logdir = logloc(dir_name=config.sw_log_dir, comment=comment)
     sw = SummaryWriter(log_dir=logdir)
 
     # Train and save the model

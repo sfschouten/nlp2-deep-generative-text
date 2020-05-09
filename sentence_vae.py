@@ -52,19 +52,22 @@ class SentenceVAEEncoder(nn.Module):
 
 class SentenceVAE(nn.Module):
 
+    FREEBITS_K = 1
+
     def __init__(self, input_dim, hidden_dim, num_classes, 
-            fb_lambda = 0.5, fb_K = 8, wd_keep_prob=1, wd_unk=None):
+            fb_lambda = 0.5, wd_keep_prob=1, wd_unk=None, mu_f_beta=3):
         """
         Args:
             input_dim:
             hidden_dim:
             num_classes:
 
-            fb_lambda:
-            fb_K:
-
-            wd_keep_prob:
-            wd_unk_i:
+            fb_lambda: the freebits lambda parameter that acts as a minimum
+                on the KL term.
+            wd_keep_prob: the probability of any word in the decoder's input
+                being kept.
+            wd_unk_i: the index of the unkown token in the embedding.
+            mu_f_beta: the margin for the mu-forcing.
         """
         super(SentenceVAE, self).__init__()
 
@@ -72,7 +75,6 @@ class SentenceVAE(nn.Module):
         self.prior = None
 
         self.fb_lambda = fb_lambda
-        self.fb_K = fb_K
 
         self.wd_keep_prob = wd_keep_prob
         if wd_keep_prob < 1:
@@ -91,8 +93,8 @@ class SentenceVAE(nn.Module):
             )
 
 
-    def calc_regularization_loss(self, q_z):        
-        B, H = q_z.batch_shape 
+    def calc_regularization_loss(self, q_z):
+        B, H = q_z.batch_shape
 
         # construct a standard normal as prior
         if not self.prior:
@@ -101,17 +103,11 @@ class SentenceVAE(nn.Module):
             self.prior = dist.Normal(loc=p_mu, scale=p_sigma)
 
         kl = dist.kl.kl_divergence(q_z, self.prior)
-      
+        kl = kl.mean(dim=0)
+
         # FREEBITS 
         if self.fb_lambda > 0:
-            split = kl.split(int(H / self.fb_K), dim = 1) 
-            split = torch.stack(split).view(self.fb_K, -1)
-            sums = split.sum(dim = 1)
-        
-            # scale up lambda value to account for sum instead of mean
-            fb_lambda = B * self.fb_lambda / self.fb_K
-
-            kl = sums.clamp(min = fb_lambda)
+            kl = kl.clamp(min = self.fb_lambda)
     
         return kl.sum()
 
@@ -128,7 +124,7 @@ class SentenceVAE(nn.Module):
         device = x.device
 
         # Use the encoder to obtain mean and standard deviation.
-        mu, sigma = self.encoder(x)         # B x H, B x H
+        mu, sigma = self.encoder(x)                     # B x H, B x H
 
         # obtain the normal distribution and sample from it 
         q_z = dist.Normal(loc=mu, scale=sigma)
@@ -137,19 +133,24 @@ class SentenceVAE(nn.Module):
         # store the regularization loss
         self.additional_loss = self.calc_regularization_loss(q_z)
 
+        # mu-FORCING
+        if self.mu_f_beta > 0:
+            mu_term = torch.bmm(mu.view(B, 1, -1), mu.view(B, -1, 1)).sum() / (2*B)
+            self.additional_loss += (self.mu_f_beta - mu_term).clamp(min=0)
+
         # WORD DROPOUT
         if self.wd_keep_prob < 1 and self.training:
             # sample words to drop/keep
             prob = torch.Tensor(S, B).to(device)        # S x B
             prob.fill_(self.wd_keep_prob)
-            drop_d = dist.bernoulli.Bernoulli(prob)     
+            drop_d = dist.bernoulli.Bernoulli(prob) 
             drops = drop_d.sample().unsqueeze(dim=2)    # S x B x 1
             
             # get unkowns to replace with
             unks = self.wd_unk.expand(S, B, -1)         # S x B x E
-
+            
             # apply
-            x = drops * x + (1-drops) * unks            
+            x = drops * x + (1-drops) * unks 
 
         output = self.decoder(x, h = z)
         return output 
