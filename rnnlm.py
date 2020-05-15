@@ -33,13 +33,17 @@ class RNNLM(nn.Module):
         Returns:
             
         """
-        S, B, E = x.shape
 
         out, _ = self.gru(x, h)     # S x B x H
+
         y = self.fc(out)            # S x B x C
         y = self.sm(y)
 
         return y
+
+
+    def get_additional_losses(self):
+        return {}
 
 
     def feed_back_forward(self, x, embedding, max_len, h = None, eos_idx = 2):

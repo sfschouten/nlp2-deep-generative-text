@@ -20,7 +20,8 @@ def load_data(embeddings=None, device='cpu', batch_size=32, bptt_len=35, path_to
     # fields
     # already tokenized so use identity function
     TEXT = data.Field(lower=True, tokenize=lambda x:x)
-    fields = [("text", TEXT)]
+    lm_fields = [("text", TEXT)]
+    s_fields = [("text", TEXT), ("target", TEXT)]
    
     print("Loading data...")
 
@@ -42,28 +43,28 @@ def load_data(embeddings=None, device='cpu', batch_size=32, bptt_len=35, path_to
                 tokens = [token for token in tokens if not token.startswith('(')]
                 total_tokens += len(tokens)
                 lm_example.extend(tokens)
-                s_examples.append(tokens)
+                s_examples.append([tokens, tokens[1:]+[bos_token]])
 
         avg_length = total_tokens / nr_lines
         print("Average Sentence Length: {}".format(avg_length))
 
         # The language model datasets are one big example with all sentences.
-        lm_example = data.Example.fromlist([lm_example], fields)
-        dataset = data.Dataset([lm_example], fields)
+        lm_example = data.Example.fromlist([lm_example], lm_fields)
+        dataset = data.Dataset([lm_example], lm_fields)
         splits_langmodel.append(dataset)
 
         # 
-        examples = [ data.Example.fromlist([tokens], fields) for tokens in s_examples ]
-        dataset = data.Dataset(examples, fields)
+        examples = [ data.Example.fromlist(example, s_fields) for example in s_examples ]
+        dataset = data.Dataset(examples, s_fields)
         splits_sentences.append(dataset)
 
     print("Done loading.")
   
     specials = ['<unk>', '<pad>', bos_token]
     if embeddings:
-        TEXT.build_vocab(*splits_langmodel, vectors=embeddings, specials=specials)
+        TEXT.build_vocab(*splits_langmodel, min_freq=2, vectors=embeddings, specials=specials)
     else:
-        TEXT.build_vocab(*splits_langmodel, specials=specials)
+        TEXT.build_vocab(*splits_langmodel, min_freq=2, specials=specials)
 
     train, valid, test = splits_langmodel
     lm_train_iter, lm_valid_iter, lm_test_iter = data.BPTTIterator.splits(
@@ -79,8 +80,9 @@ def load_data(embeddings=None, device='cpu', batch_size=32, bptt_len=35, path_to
     train, valid, test = splits_sentences
     s_train_iter, s_valid_iter, s_test_iter = data.BucketIterator.splits(
             (train, valid, test),
-            batch_size = batch_size,
+            batch_size = 1,#(batch_size, 1, 1),
             shuffle = True,
+            sort = False,
             device = device
         )
 

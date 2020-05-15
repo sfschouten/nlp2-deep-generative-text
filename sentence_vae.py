@@ -37,9 +37,10 @@ class SentenceVAEEncoder(nn.Module):
         Returns:
             
         """
-        S, B, E = x.shape
 
         _, h_n = self.gru(x)        # 2 x B x H
+
+        _, B, H = h_n.shape
         h_n = h_n.permute(1,0,2)    # B x 2 x H
         h_n = h_n.reshape(B,-1)     # B x 2H
 
@@ -51,8 +52,6 @@ class SentenceVAEEncoder(nn.Module):
 
 
 class SentenceVAE(nn.Module):
-
-    FREEBITS_K = 1
 
     def __init__(self, input_dim, hidden_dim, num_classes, 
             fb_lambda = 0.5, wd_keep_prob=1, wd_unk=None, mu_f_beta=3):
@@ -75,10 +74,11 @@ class SentenceVAE(nn.Module):
         self.prior = None
 
         self.fb_lambda = fb_lambda
+        self.mu_f_beta = mu_f_beta
 
         self.wd_keep_prob = wd_keep_prob
         if wd_keep_prob < 1:
-            self.wd_unk = wd_unk.unsqueeze(dim=0)#.unsqueeze(dim=0)
+            self.wd_unk = wd_unk.unsqueeze(dim=0)
 
         self.encoder = SentenceVAEEncoder(
                 input_dim,          # E
@@ -94,7 +94,6 @@ class SentenceVAE(nn.Module):
 
 
     def calc_regularization_loss(self, q_z):
-        B, H = q_z.batch_shape
 
         # construct a standard normal as prior
         if not self.prior:
@@ -106,10 +105,17 @@ class SentenceVAE(nn.Module):
         kl = kl.mean(dim=0)
 
         # FREEBITS 
-        if self.fb_lambda > 0:
-            kl = kl.clamp(min = self.fb_lambda)
+        self.fb_loss = (self.fb_lambda - kl).clamp(min = 0).sum()
     
-        return kl.sum()
+        self.kl_loss = kl.sum()
+
+
+    def get_additional_losses(self):
+        return {
+            'kl-divergence' : self.kl_loss,
+            'fb-loss' : self.fb_loss,
+            'mu-loss' : self.mu_loss
+        } 
 
 
     def forward(self, x):
@@ -131,12 +137,11 @@ class SentenceVAE(nn.Module):
         z = q_z.rsample().unsqueeze(dim=0)
 
         # store the regularization loss
-        self.additional_loss = self.calc_regularization_loss(q_z)
+        self.calc_regularization_loss(q_z)
 
         # mu-FORCING
-        if self.mu_f_beta > 0:
-            mu_term = torch.bmm(mu.view(B, 1, -1), mu.view(B, -1, 1)).sum() / (2*B)
-            self.additional_loss += (self.mu_f_beta - mu_term).clamp(min=0)
+        mu_term = torch.bmm(mu.view(B, 1, -1), mu.view(B, -1, 1)).sum() / (2*B)
+        self.mu_loss = (self.mu_f_beta - mu_term).clamp(min=0)
 
         # WORD DROPOUT
         if self.wd_keep_prob < 1 and self.training:
@@ -156,4 +161,44 @@ class SentenceVAE(nn.Module):
         return output 
 
 
+    def perplexity(self, x, t):
+        
+
+        S, B, E = x.shape
+        device = x.device
+
+        mu, sigma = self.encoder(x)
+        mu = mu.unsqueeze(1).expand(-1, K, -1)          # B x K x H
+        sigma = sigma.unsqueeze(1).expand(-1, K, -1)    # B x K x H
+      
+        q_z = dist.Normal(loc=mu, scale=sigma)
+        z = q_z.sample().unsqueeze(dim=0)               # 1 x B x K x H
+
+        x = x.unsqueeze(2).expand(-1, -1, K, -1)        # S x B x K x E
+        t = t.unsqueeze(2).expand(-1, -1, K)            # S x B x K
+
+        y = self.decoder(x, h = z)                      # S x B x K x V
+
+        y = y.view(-1, y.shape[3])                      # S*B*K x V
+        t = t.view(-1)                                  # S*B*K
+        nll = F.cross_entropy(y, t, reduction='none')   # S*B*K
+        ll = -nll.view(S, B, K).sum(dim=0)              # B x K
+
+        p_mu = torch.zeros_like(mu)
+        p_sigma = torch.ones_like(sigma)
+        prior = dist.Normal(loc=p_mu, scale=p_sigma)
+
+        z = z.squeeze()
+        p_z = prior.log_prob(z).sum(dim=2)              # B x K
+        log_joint = ll + p_z
+        
+        q = q_z.log_prob(z).sum(2)                      # B x K
+        marginal = (log_joint - q).exp().sum(dim=1)     # B
+        n_log_marg = -marginal.log()
+
+
+
+
+
+        
 

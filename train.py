@@ -43,11 +43,18 @@ def test_model(model, embedding, criterion, valid_iter, device):
         nll = 0
         batch_acc = 0
         for step, batch in enumerate(valid_iter):
+            
+            batch_text = batch.text
+            batch_target = batch.target
 
-            batch_input = embedding(batch.text.to(device))
-            batch_target = batch.target 
+            batch_text = embedding(batch_text.to(device))
+            batch_target = batch_target.to(device)
 
-            batch_output = model(batch_input)
+            B = batch_text.shape[1]
+            if B != config.batch_size:
+                continue
+
+            batch_output = model(batch_text)
 
             # merge batch and sequence dimension for evaluation
             batch_output = batch_output.view(-1, batch_output.shape[2])
@@ -75,9 +82,12 @@ def train(config, sw):
             batch_size=config.batch_size,
             bptt_len=config.seq_len
         )
+
     #train_iter, _, _ = lm_iters
     #_, valid_iter, test_iter = s_iters
+
     train_iter, valid_iter, test_iter = lm_iters
+    #train_iter, valid_iter, test_iter = s_iters
 
     print("Vocab size: {}".format(vocab.vectors.shape))
 
@@ -99,7 +109,8 @@ def train(config, sw):
             num_classes,
             fb_lambda = config.freebits_lambda, 
             wd_keep_prob = config.wdropout_prob, 
-            wd_unk = embedding(torch.LongTensor([vocab.stoi["<unk>"]]).to(device))
+            wd_unk = embedding(torch.LongTensor([vocab.stoi["<unk>"]]).to(device)),
+            mu_f_beta = config.mu_forcing_beta
         )
     else: raise Error("Invalid model parameter.")
     model = model.to(device)
@@ -114,11 +125,20 @@ def train(config, sw):
     best_acc = 0
     for epoch in itertools.count():
         for batch in train_iter:
-            batch_text = embedding(batch.text.to(device))   # 
-            batch_target = batch.target.to(device)
-            batch_output = model(batch_text)
+
+            batch_text = batch.text
+            batch_target = batch.target
+
+            batch_text = embedding(batch_text.to(device))
+            batch_target = batch_target.to(device)
 
             B = batch_text.shape[1]
+            if B != config.batch_size:
+                print("Batch size was {} instead of {}.".format(B, config.batch_size))
+                continue
+
+            batch_output = model(batch_text)
+
             # merge batch and sequence dimension for evaluation
             batch_output = batch_output.view(-1, batch_output.shape[2])
             batch_target = batch_target.view(-1)
@@ -127,10 +147,9 @@ def train(config, sw):
             loss = criterion(batch_output, batch_target) / B
             sw.add_scalar('Train/NLL', loss.item(), global_step)
 
-            if hasattr(model, 'additional_loss'):
-                kl = model.additional_loss
-                loss += kl
-                sw.add_scalar('Train/KL-divergence', kl, global_step)
+            for loss_name, additional_loss in model.get_additional_losses().items():
+                loss += additional_loss
+                sw.add_scalar('Train/'+loss_name, additional_loss, global_step)
 
             optimizer.zero_grad()
             loss.backward()
@@ -139,6 +158,9 @@ def train(config, sw):
 
             sw.add_scalar('Train/Loss', loss, global_step)
             sw.add_scalar('Train/Accuracy', batch_acc, global_step)
+
+            if batch_acc > best_acc:
+                best_acc = batch_acc
 
             if global_step % config.print_every == 0:
                 print("[{}] Train Step {:04d}/{:04d}, "
@@ -215,7 +237,7 @@ if __name__ == "__main__":
     pp.pprint(config)
 
     # summarywriter 
-    comment = "_fblambda={}_wdropout={}".format(config.freebits_lambda, config.wdropout_prob)
+    comment = "" # "_fblambda={}_wdropout={}".format(config.freebits_lambda, config.wdropout_prob)
     logdir = logloc(dir_name=config.sw_log_dir, comment=comment)
     sw = SummaryWriter(log_dir=logdir)
 
