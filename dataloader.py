@@ -17,21 +17,21 @@ def load_data(embeddings=None, device='cpu', batch_size=32, bptt_len=35, path_to
         bptt_len: the length of the sequences in the batches
     """ 
 
-    # fields
-    # already tokenized so use identity function
+    # Already tokenized so use identity function.
     TEXT = data.Field(lower=True, tokenize=lambda x:x)
+    SENTENCE = data.Field(lower=True, tokenize=lambda x:x, include_lengths=True)
     lm_fields = [("text", TEXT)]
-    s_fields = [("text", TEXT), ("target", TEXT)]
+    s_fields = [("text", SENTENCE), ("target", SENTENCE)]
    
     print("Loading data...")
 
-    # extract sentences from files; turn into examples
+    # Extract sentences from files; turn into examples.
     splits_langmodel = []
     splits_sentences = []
     for f in [train, valid, test]:
         path = os.path.join(path_to_data, f)
        
-        # remove POS tags and concatenate into one list for language modelling.
+        # Remove POS tags and concatenate into one list for language modelling.
         nr_lines = 0
         total_tokens = 0
         lm_example = []
@@ -66,6 +66,8 @@ def load_data(embeddings=None, device='cpu', batch_size=32, bptt_len=35, path_to
     else:
         TEXT.build_vocab(*splits_langmodel, min_freq=2, specials=specials)
 
+    SENTENCE.vocab = TEXT.vocab
+
     train, valid, test = splits_langmodel
     lm_train_iter, lm_valid_iter, lm_test_iter = data.BPTTIterator.splits(
             (train, valid, test),
@@ -75,12 +77,10 @@ def load_data(embeddings=None, device='cpu', batch_size=32, bptt_len=35, path_to
             device = device
         )
 
-    #TODO create labels for these dataiterators?
-
     train, valid, test = splits_sentences
     s_train_iter, s_valid_iter, s_test_iter = data.BucketIterator.splits(
             (train, valid, test),
-            batch_size = 1,#(batch_size, 1, 1),
+            batch_size = batch_size,
             shuffle = True,
             sort = False,
             device = device
@@ -88,7 +88,7 @@ def load_data(embeddings=None, device='cpu', batch_size=32, bptt_len=35, path_to
 
     return (lm_train_iter, lm_valid_iter, lm_test_iter), \
            (s_train_iter, s_valid_iter, s_test_iter), \
-           TEXT.vocab
+           TEXT.vocab 
 
 
 if __name__ == "__main__":

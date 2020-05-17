@@ -25,7 +25,7 @@ class RNNLM(nn.Module):
         self.sm = nn.LogSoftmax(dim=2)
 
 
-    def forward(self, x, h = None):
+    def forward(self, x, l, h = None):
         """
         Args:
             x : vectors that represent the sentence     S x B x E
@@ -33,12 +33,15 @@ class RNNLM(nn.Module):
         Returns:
             
         """
+    
+        packed = nn.utils.rnn.pack_padded_sequence(x, l, enforce_sorted=False)
 
-        out, _ = self.gru(x, h)     # S x B x H
+        out, _ = self.gru(packed, h)     # S x B x H
+
+        out, _ = nn.utils.rnn.pad_packed_sequence(out, total_length=x.shape[0])
 
         y = self.fc(out)            # S x B x C
         y = self.sm(y)
-
         return y
 
 

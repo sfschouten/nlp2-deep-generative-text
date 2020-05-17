@@ -27,44 +27,66 @@ from sentence_vae import SentenceVAE
 
 ################################################################################
 
-def save_model(label, model, config):
-    name = "{}_{}e_{}h_{}_{}".format(
+def file_name(label, config):
+    return "{}_{}_{}".format(
             config.model,
-            config.embed_dim,
-            config.hidden_dim,
             label,
             config.save_file
     )
+
+def save_model(label, model, config):
+    name = file_name(label, config)
     torch.save(model, name)
+
+def load_model(label, config):
+    name = file_name(label, config) 
+    return torch.load(name)
+
 
 def test_model(model, embedding, criterion, valid_iter, device):
     with torch.no_grad():
         model.eval()
         nll = 0
-        batch_acc = 0
+        marg = 0
+        lens = 0
+        additional_losses = model.get_additional_losses()
         for step, batch in enumerate(valid_iter):
             
-            batch_text = batch.text
-            batch_target = batch.target
-
+            batch_text, txt_len = batch.text
+            batch_target, tgt_len = batch.target
             batch_text = embedding(batch_text.to(device))
             batch_target = batch_target.to(device)
 
-            B = batch_text.shape[1]
-            if B != config.batch_size:
-                continue
+            batch_output = model(batch_text, txt_len)
+           
+            K = 4
+            itr = zip(
+                torch.split(batch_text, int(K/2), dim=1), 
+                torch.split(txt_len, int(K/2), dim=0), 
+                torch.split(batch_target, int(K/2), dim=1)
+            )
 
-            batch_output = model(batch_text)
+            for txt, ln, tgt in itr:
+                marg += model.neg_marginal_log_likelihood(txt, ln, tgt, K=K)
+
+            lens += txt_len.sum()
+
+            for loss_name, additional_loss in model.get_additional_losses().items():
+                additional_losses[loss_name] += additional_loss
 
             # merge batch and sequence dimension for evaluation
             batch_output = batch_output.view(-1, batch_output.shape[2])
             batch_target = batch_target.view(-1)
 
-            batch_acc += batch_output.argmax(dim=1).eq(batch_target).double().mean()
             nll += criterion(batch_output, batch_target).item()
+            
+    pp = torch.exp(marg / lens)
+
+    for loss_name, additional_loss in model.get_additional_losses().items():
+        additional_losses[loss_name] /= step
 
     nll_per_sample = nll / (step * valid_iter.batch_size) 
-    return batch_acc/(step + 1), nll_per_sample 
+    return nll_per_sample, pp, additional_losses 
 
 
 def train(config, sw):
@@ -83,11 +105,12 @@ def train(config, sw):
             bptt_len=config.seq_len
         )
 
-    #train_iter, _, _ = lm_iters
-    #_, valid_iter, test_iter = s_iters
-
-    train_iter, valid_iter, test_iter = lm_iters
-    #train_iter, valid_iter, test_iter = s_iters
+    _, valid_iter, test_iter = s_iters
+    
+    if config.use_bptt:
+        train_iter,_,_ = lm_iters
+    else:
+        train_iter,_,_ = s_iters
 
     print("Vocab size: {}".format(vocab.vectors.shape))
 
@@ -120,69 +143,77 @@ def train(config, sw):
     criterion = torch.nn.NLLLoss(reduction="sum").to(config.device)
     scheduler = optim.lr_scheduler.StepLR(optimizer, 1, gamma=config.learning_rate_decay)
     lr = config.learning_rate
-  
+
     global_step = 0
-    best_acc = 0
+    best_nll = sys.maxsize
+    best_pp = sys.maxsize
     for epoch in itertools.count():
         for batch in train_iter:
-
-            batch_text = batch.text
-            batch_target = batch.target
+            
+            # [1] Get data
+            if config.use_bptt:
+                batch_text = batch.text
+                batch_target = batch.target
+                txt_len = torch.full((batch_text.shape[1],), batch_text.shape[0], device=device)
+                tgt_len = txt_len
+            else:
+                batch_text, txt_len = batch.text
+                batch_target, tgt_len = batch.target
 
             batch_text = embedding(batch_text.to(device))
             batch_target = batch_target.to(device)
-
-            B = batch_text.shape[1]
-            if B != config.batch_size:
-                print("Batch size was {} instead of {}.".format(B, config.batch_size))
-                continue
-
-            batch_output = model(batch_text)
+           
+            # [2] Forward & Loss
+            batch_output = model(batch_text, txt_len)
 
             # merge batch and sequence dimension for evaluation
             batch_output = batch_output.view(-1, batch_output.shape[2])
             batch_target = batch_target.view(-1)
 
-            batch_acc = batch_output.argmax(dim=1).eq(batch_target).double().mean()
-            loss = criterion(batch_output, batch_target) / B
-            sw.add_scalar('Train/NLL', loss.item(), global_step)
+            B = batch_text.shape[1]
+            nll = criterion(batch_output, batch_target) / B
+            sw.add_scalar('Train/NLL', nll.item(), global_step)
 
+            loss = nll.clone()
             for loss_name, additional_loss in model.get_additional_losses().items():
                 loss += additional_loss
                 sw.add_scalar('Train/'+loss_name, additional_loss, global_step)
 
+            # [3] Optimize
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.max_norm)
             optimizer.step()
 
-            sw.add_scalar('Train/Loss', loss, global_step)
-            sw.add_scalar('Train/Accuracy', batch_acc, global_step)
-
-            if batch_acc > best_acc:
-                best_acc = batch_acc
+            sw.add_scalar('Train/Loss', loss.item(), global_step)
 
             if global_step % config.print_every == 0:
                 print("[{}] Train Step {:04d}/{:04d}, "
-                        "Accuracy = {:.2f}, Loss = {:.3f}".format(
+                        "NLL = {:.2f}, Loss = {:.3f}".format(
                         datetime.now().strftime("%Y-%m-%d %H:%M"), global_step,
-                        config.train_steps, batch_acc, loss
+                        config.train_steps, nll.item(), loss.item()
                 ), flush=True)
             
             global_step += 1
             
-        epoch_acc, epoch_nll = test_model(model, embedding, criterion, valid_iter, device) 
-        print("Valid NLL: {}".format(epoch_nll))
+        epoch_nll, epoch_pp, additional_losses = test_model(model, embedding, criterion, valid_iter, device) 
         model.train()
+
+        print("Valid NLL: {}".format(epoch_nll))
+        print("Valid Perplexity: {}".format(epoch_pp))
         sw.add_scalar('Valid/NLL', epoch_nll, global_step)
-        sw.add_scalar('Valid/Accuracy', epoch_acc, global_step)
-        sw.flush()
-        
-        if epoch_acc > best_acc:
+        sw.add_scalar('Valid/Perplexity', epoch_pp, global_step)
+        for loss_name, additional_loss in additional_losses.items():
+            sw.add_scalar('Valid/'+loss_name, additional_loss, global_step)
+       
+        if epoch_nll < best_nll:
+            best_nll = epoch_nll
             save_model("best", model, config)
+        if epoch_pp < best_pp:
+            best_pp = epoch_pp
         
         if global_step >= config.train_steps:
-                break
+            break
 
         scheduler.step() 
         print("Learning Rate: {}".format([group['lr'] for group in optimizer.param_groups]))
@@ -190,10 +221,13 @@ def train(config, sw):
 
     print('Done training.')
 
-    epoch_acc, epoch_nll = test_model(model, embedding, criterion, test_iter, device)
-    print("Test NLL: {}".format(epoch_nll))
+    best_model = load_model("best", config)
+    test_nll, test_pp, test_additional_losses = test_model(best_model, embedding, criterion, test_iter, device)
+    print("Test NLL: {}".format(test_nll))
+    print("Test PP: {}".format(test_pp))
+    print("{}".format(test_additional_losses))
 
-    return model
+    return best_model, model, {'hparam/nll':best_nll ,'hparam/pp':best_pp}
 
 ################################################################################
 
@@ -218,13 +252,15 @@ if __name__ == "__main__":
     parser.add_argument('--mu_forcing_beta', type=float, default=0, help="")
 
     # Training params
+    parser.add_argument('--use_bptt', type=bool, default=False, help='')
+    parser.add_argument('--seq_len', type=int, default=int(25), help='The length of the sequences to train on.')
+    
     parser.add_argument('--batch_size', type=int, default=32, help='Number of samples to process in a batch')
     parser.add_argument('--device', type=str, default="cuda", help="Training device 'cpu' or 'cuda:0'")
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate')
     parser.add_argument('--learning_rate_decay', type=float, default=0.95, help='Learning rate decay fraction')
-    parser.add_argument('--train_steps', type=int, default=int(10000), help='Number of training steps')
+    parser.add_argument('--train_steps', type=int, default=int(14000), help='Number of training steps')
     parser.add_argument('--max_norm', type=float, default=5.0, help='Gradient clipping maximum norm.')
-    parser.add_argument('--seq_len', type=int, default=int(25), help='The length of the sequences to train on.')
 
     # Misc params
     parser.add_argument('--print_every', type=int, default=50, help='How often to print training progress')
@@ -237,14 +273,19 @@ if __name__ == "__main__":
     pp.pprint(config)
 
     # summarywriter 
-    comment = "" # "_fblambda={}_wdropout={}".format(config.freebits_lambda, config.wdropout_prob)
+    comment = "" 
     logdir = logloc(dir_name=config.sw_log_dir, comment=comment)
     sw = SummaryWriter(log_dir=logdir)
 
     # Train and save the model
-    model = train(config, sw)
+    best_model, model, metrics = train(config, sw)
     model = model.cpu()
 
+    config_dict = dict(vars(config))
+    for key in ['use_bptt','seq_len','device','train_steps','print_every','sw_log_dir','save_file']:
+        del config_dict[key]
+
+    sw.add_hparams(config_dict, metrics)
     sw.close()
 
     save_model("last", model, config)

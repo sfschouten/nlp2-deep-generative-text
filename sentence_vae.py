@@ -1,8 +1,13 @@
+import math
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import torch.distributions as dist
+
+from scipy.special import logsumexp as LSE
 
 from rnnlm import RNNLM
-import torch.distributions as dist
 
 
 class SentenceVAEEncoder(nn.Module):
@@ -29,7 +34,7 @@ class SentenceVAEEncoder(nn.Module):
             )
 
 
-    def forward(self, x):
+    def forward(self, x, l):
         """
         Args:
             x : vectors that represent the sentence     S x B x E
@@ -38,7 +43,9 @@ class SentenceVAEEncoder(nn.Module):
             
         """
 
-        _, h_n = self.gru(x)        # 2 x B x H
+        packed = nn.utils.rnn.pack_padded_sequence(x, l, enforce_sorted=False)
+
+        _, h_n = self.gru(packed)   # 2 x B x H
 
         _, B, H = h_n.shape
         h_n = h_n.permute(1,0,2)    # B x 2 x H
@@ -96,12 +103,12 @@ class SentenceVAE(nn.Module):
     def calc_regularization_loss(self, q_z):
 
         # construct a standard normal as prior
-        if not self.prior:
-            p_mu = torch.zeros_like(q_z.mean)
-            p_sigma = torch.ones_like(q_z.stddev)
-            self.prior = dist.Normal(loc=p_mu, scale=p_sigma)
+        
+        p_mu = torch.zeros_like(q_z.mean)
+        p_sigma = torch.ones_like(q_z.stddev)
+        prior = dist.Normal(loc=p_mu, scale=p_sigma)
 
-        kl = dist.kl.kl_divergence(q_z, self.prior)
+        kl = dist.kl.kl_divergence(q_z, prior)
         kl = kl.mean(dim=0)
 
         # FREEBITS 
@@ -118,7 +125,7 @@ class SentenceVAE(nn.Module):
         } 
 
 
-    def forward(self, x):
+    def forward(self, x, l):
         """
         Args:
             x : vectors that represent the sentence     S x B x E
@@ -130,7 +137,7 @@ class SentenceVAE(nn.Module):
         device = x.device
 
         # Use the encoder to obtain mean and standard deviation.
-        mu, sigma = self.encoder(x)                     # B x H, B x H
+        mu, sigma = self.encoder(x, l)                  # B x H, B x H
 
         # obtain the normal distribution and sample from it 
         q_z = dist.Normal(loc=mu, scale=sigma)
@@ -157,48 +164,62 @@ class SentenceVAE(nn.Module):
             # apply
             x = drops * x + (1-drops) * unks 
 
-        output = self.decoder(x, h = z)
+        output = self.decoder(x, l, h = z)
         return output 
 
 
-    def perplexity(self, x, t):
+    def neg_marginal_log_likelihood(self, x, l, t, K=4):
+        with torch.no_grad():
+            S, B, E = x.shape
+            device = x.device
+    
+            # encode
+            mu, sigma = self.encoder(x, l)
+
+            mu = mu.unsqueeze(1).expand(-1, K, -1)          # B x K x H
+            sigma = sigma.unsqueeze(1).expand(-1, K, -1)    # B x K x H
         
+            # get distributions
+            q = dist.Normal(loc=mu, scale=sigma)
+            z = q.sample()                                  # B x K x H
+            
+            p_mu = torch.zeros_like(mu)
+            p_sigma = torch.ones_like(sigma)
+            prior = dist.Normal(loc=p_mu, scale=p_sigma)
+            
+            # get probabilities of z
+            log_p_z = prior.log_prob(z).sum(dim=2)          # B x K
+            log_q_z = q.log_prob(z).sum(2)                  # B x K
 
-        S, B, E = x.shape
-        device = x.device
+            # repeat K times and merge with batch dimension
+            x = x.unsqueeze(2).expand(-1, -1, K, -1)        # S x B x K x E
+            l = l.unsqueeze(1).expand(-1, K)                # B x K
+            t = t.unsqueeze(2).expand(-1, -1, K)            # S x B x K
+            x = x.reshape(S, B*K, E)
+            l = l.reshape(B*K)
+            t = t.reshape(S, B*K)
+            z = z.reshape(1, B*K, -1)
 
-        mu, sigma = self.encoder(x)
-        mu = mu.unsqueeze(1).expand(-1, K, -1)          # B x K x H
-        sigma = sigma.unsqueeze(1).expand(-1, K, -1)    # B x K x H
-      
-        q_z = dist.Normal(loc=mu, scale=sigma)
-        z = q_z.sample().unsqueeze(dim=0)               # 1 x B x K x H
+            # decode every sample in batch for each z_k
+            y = self.decoder(x, l, h = z)                   # S x B*K x V
+            V = y.shape[2] # vocabulary
 
-        x = x.unsqueeze(2).expand(-1, -1, K, -1)        # S x B x K x E
-        t = t.unsqueeze(2).expand(-1, -1, K)            # S x B x K
+            # calculate NLL
+            y = y.view(-1, V)                               # S*B*K x V
+            t = t.view(-1)                                  # S*B*K
+            nll = F.nll_loss(y, t, reduction='none')        # S*B*K
 
-        y = self.decoder(x, h = z)                      # S x B x K x V
+            # calculate log likelihood of sentences ( p(x|z_k) )
+            ll = -nll.view(S, B, K).sum(dim=0)              # B x K
+           
+            # p(x,z) = p(x|z) p(z)
+            log_joint = ll + log_p_z
 
-        y = y.view(-1, y.shape[3])                      # S*B*K x V
-        t = t.view(-1)                                  # S*B*K
-        nll = F.cross_entropy(y, t, reduction='none')   # S*B*K
-        ll = -nll.view(S, B, K).sum(dim=0)              # B x K
+            # add -log(K) to get mean instead of sum 
+            log_marginal = torch.logsumexp(log_joint - log_q_z - math.log(K), 1)    # B
 
-        p_mu = torch.zeros_like(mu)
-        p_sigma = torch.ones_like(sigma)
-        prior = dist.Normal(loc=p_mu, scale=p_sigma)
-
-        z = z.squeeze()
-        p_z = prior.log_prob(z).sum(dim=2)              # B x K
-        log_joint = ll + p_z
-        
-        q = q_z.log_prob(z).sum(2)                      # B x K
-        marginal = (log_joint - q).exp().sum(dim=1)     # B
-        n_log_marg = -marginal.log()
+            return -log_marginal.sum()
 
 
-
-
-
-        
+            
 
