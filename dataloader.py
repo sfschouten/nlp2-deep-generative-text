@@ -66,7 +66,6 @@ def load_data(embeddings=None, device='cpu', batch_size=32, bptt_len=35, path_to
     else:
         TEXT.build_vocab(*splits_langmodel, min_freq=2, specials=specials)
 
-    SENTENCE.vocab = TEXT.vocab
 
     train, valid, test = splits_langmodel
     lm_train_iter, lm_valid_iter, lm_test_iter = data.BPTTIterator.splits(
@@ -78,31 +77,38 @@ def load_data(embeddings=None, device='cpu', batch_size=32, bptt_len=35, path_to
         )
 
     train, valid, test = splits_sentences
-    s_train_iter, s_valid_iter, s_test_iter = data.BucketIterator.splits(
-            (train, valid, test),
+    s_train_iter = data.BucketIterator(
+            train,
             batch_size = batch_size,
+            sort_key = lambda x:x,
+            shuffle = True,
+            sort = False,
+            device = device
+        )
+    s_valid_iter, s_test_iter = data.BucketIterator.splits(
+            (valid, test),
+            batch_size = 16,
             shuffle = True,
             sort = False,
             device = device
         )
 
-    return (lm_train_iter, lm_valid_iter, lm_test_iter), \
-           (s_train_iter, s_valid_iter, s_test_iter), \
-           TEXT.vocab 
+
+    SENTENCE.vocab = TEXT.vocab
+    
+    return (lm_train_iter, lm_valid_iter, lm_test_iter, TEXT), \
+           (s_train_iter, s_valid_iter, s_test_iter, SENTENCE) 
 
 
 if __name__ == "__main__":
 
     print("Testing dataloader.")
 
-    train_iter, valid_iter, test_iter, vocab = load_data()
+    (_,_,_,field2), (train, valid, test, field) = load_data()
 
-    for i, batch in enumerate(valid_iter):
-        print(batch)
-        print(batch.text)
-        print(batch.target)
-        
-        print("==========================")
+    print(field.vocab.vectors)
+    print(field2.vocab.vectors)
 
-        if i > 15:
-            break
+    print('\n'.join([f'{i}: ' + ' '.join(example.text[1:]) for i,example in enumerate(test.dataset)]))
+    
+    

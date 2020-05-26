@@ -78,7 +78,6 @@ class SentenceVAE(nn.Module):
         super(SentenceVAE, self).__init__()
 
         self.hidden_dim = hidden_dim
-        self.prior = None
 
         self.fb_lambda = fb_lambda
         self.mu_f_beta = mu_f_beta
@@ -99,6 +98,20 @@ class SentenceVAE(nn.Module):
                 num_classes         # C
             )
 
+    def _sample_prior(self, device):
+        p_mu = torch.zeros((1, self.hidden_dim)).to(device)
+        p_sigma = torch.ones((1, self.hidden_dim)).to(device)
+        prior = dist.Normal(loc=p_mu, scale=p_sigma)
+        return prior.sample()
+
+    def greedy_sample(self, embedding, max_len, x = None, eos_idx = 2):
+        h = self._sample_prior(embedding.weight.device)
+        return self.decoder.greedy_sample(embedding, max_len, x, h, eos_idx) 
+
+    def temperature_sample(self, embedding, max_len, temperature = 2, x = None, eos_idx = 2):
+        h = self._sample_prior(embedding.weight.device)
+        return self.decoder.temperature_sample(embedding, max_len, temperature, x, h, eos_idx) 
+        
 
     def calc_regularization_loss(self, q_z):
 
@@ -168,7 +181,14 @@ class SentenceVAE(nn.Module):
         return output 
 
 
-    def neg_marginal_log_likelihood(self, x, l, t, K=4):
+    def multi_sample_estimates(self, x, l, t, K=4):
+        """
+        Returns:
+        multi-sample estimates of:
+            the negative marginal log-likelihood
+            the negative conditional log-likelihood
+            the kl-divergence between prior and posterior
+        """
         with torch.no_grad():
             S, B, E = x.shape
             device = x.device
@@ -186,8 +206,8 @@ class SentenceVAE(nn.Module):
             p_mu = torch.zeros_like(mu)
             p_sigma = torch.ones_like(sigma)
             prior = dist.Normal(loc=p_mu, scale=p_sigma)
-            
-            # get probabilities of z
+           
+            # get prior and posterior probabilities of z
             log_p_z = prior.log_prob(z).sum(dim=2)          # B x K
             log_q_z = q.log_prob(z).sum(2)                  # B x K
 
@@ -206,7 +226,7 @@ class SentenceVAE(nn.Module):
 
             # calculate NLL
             y = y.view(-1, V)                               # S*B*K x V
-            t = t.view(-1)                                  # S*B*K
+            t = t.reshape(-1)                               # S*B*K
             nll = F.nll_loss(y, t, reduction='none')        # S*B*K
 
             # calculate log likelihood of sentences ( p(x|z_k) )
@@ -214,11 +234,16 @@ class SentenceVAE(nn.Module):
            
             # p(x,z) = p(x|z) p(z)
             log_joint = ll + log_p_z
+            ll = ll.mean(dim=1)
 
             # add -log(K) to get mean instead of sum 
             log_marginal = torch.logsumexp(log_joint - log_q_z - math.log(K), 1)    # B
 
-            return -log_marginal.sum()
+            kl = dist.kl.kl_divergence(q, prior)
+            kl = kl.mean(dim=1).sum(dim=1) 
+            #kl = 0
+
+            return -log_marginal, -ll, kl 
 
 
             

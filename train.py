@@ -46,6 +46,7 @@ def load_model(label, config):
 def test_model(model, embedding, criterion, valid_iter, device):
     with torch.no_grad():
         model.eval()
+        kl = 0
         nll = 0
         marg = 0
         lens = 0
@@ -59,34 +60,34 @@ def test_model(model, embedding, criterion, valid_iter, device):
 
             batch_output = model(batch_text, txt_len)
            
-            K = 4
+            K = 10
+            splits = int(K/2) 
             itr = zip(
-                torch.split(batch_text, int(K/2), dim=1), 
-                torch.split(txt_len, int(K/2), dim=0), 
-                torch.split(batch_target, int(K/2), dim=1)
+                torch.split(batch_text, splits, dim=1), 
+                torch.split(txt_len, splits, dim=0), 
+                torch.split(batch_target, splits, dim=1)
             )
 
             for txt, ln, tgt in itr:
-                marg += model.neg_marginal_log_likelihood(txt, ln, tgt, K=K)
+                m, c, d = model.multi_sample_estimates(txt, ln, tgt, K=K)
+                marg += m.sum()
+                nll += c.sum().item()
+                kl += d.sum().item()
 
             lens += txt_len.sum()
 
             for loss_name, additional_loss in model.get_additional_losses().items():
                 additional_losses[loss_name] += additional_loss
 
-            # merge batch and sequence dimension for evaluation
-            batch_output = batch_output.view(-1, batch_output.shape[2])
-            batch_target = batch_target.view(-1)
-
-            nll += criterion(batch_output, batch_target).item()
-            
     pp = torch.exp(marg / lens)
 
     for loss_name, additional_loss in model.get_additional_losses().items():
         additional_losses[loss_name] /= step
 
-    nll_per_sample = nll / (step * valid_iter.batch_size) 
-    return nll_per_sample, pp, additional_losses 
+    nr_samples = (step * valid_iter.batch_size)
+    nll_per_sample = nll / nr_samples 
+    kl_per_sample = kl / nr_samples
+    return nll_per_sample, pp, kl_per_sample, additional_losses 
 
 
 def train(config, sw):
@@ -98,19 +99,20 @@ def train(config, sw):
     #vocab = torchtext.vocab.GloVe()
 
     # get data iterators
-    lm_iters, s_iters, vocab = load_data(
+    lm_iters, s_iters = load_data(
             embeddings=vocab, 
             device=device, 
             batch_size=config.batch_size,
             bptt_len=config.seq_len
         )
 
-    _, valid_iter, test_iter = s_iters
-    
+    _, valid_iter, test_iter, field = s_iters
+    vocab = field.vocab
+
     if config.use_bptt:
-        train_iter,_,_ = lm_iters
+        train_iter,_,_,_ = lm_iters
     else:
-        train_iter,_,_ = s_iters
+        train_iter,_,_,_ = s_iters
 
     print("Vocab size: {}".format(vocab.vectors.shape))
 
@@ -147,6 +149,7 @@ def train(config, sw):
     global_step = 0
     best_nll = sys.maxsize
     best_pp = sys.maxsize
+    best_kl = None
     for epoch in itertools.count():
         for batch in train_iter:
             
@@ -196,16 +199,27 @@ def train(config, sw):
             
             global_step += 1
             
-        epoch_nll, epoch_pp, additional_losses = test_model(model, embedding, criterion, valid_iter, device) 
+        epoch_nll, epoch_pp, epoch_kl, additional_losses = test_model(model, embedding, criterion, valid_iter, device) 
         model.train()
 
         print("Valid NLL: {}".format(epoch_nll))
         print("Valid Perplexity: {}".format(epoch_pp))
+        print("Valid KL: {}".format(epoch_kl))
         sw.add_scalar('Valid/NLL', epoch_nll, global_step)
         sw.add_scalar('Valid/Perplexity', epoch_pp, global_step)
+        sw.add_scalar('Valid/KL', epoch_kl, global_step)
+        # below will also have kl but not multisample
         for loss_name, additional_loss in additional_losses.items():
             sw.add_scalar('Valid/'+loss_name, additional_loss, global_step)
-       
+      
+        # sample some sentences
+        MAX_LEN = 50
+        for _ in range(5):
+            text = model.temperature_sample(embedding, MAX_LEN)
+            text = ' '.join(vocab.itos[w] for w in text)
+            print(text)
+            sw.add_text('Valid/Sample-text', text, global_step)
+
         if epoch_nll < best_nll:
             best_nll = epoch_nll
             save_model("best", model, config)
@@ -222,9 +236,10 @@ def train(config, sw):
     print('Done training.')
 
     best_model = load_model("best", config)
-    test_nll, test_pp, test_additional_losses = test_model(best_model, embedding, criterion, test_iter, device)
+    test_nll, test_pp, test_kl, test_additional_losses = test_model(best_model, embedding, criterion, test_iter, device)
     print("Test NLL: {}".format(test_nll))
     print("Test PP: {}".format(test_pp))
+    print("Test KL: {}".format(test_kl))
     print("{}".format(test_additional_losses))
 
     return best_model, model, {'hparam/nll':best_nll ,'hparam/pp':best_pp}

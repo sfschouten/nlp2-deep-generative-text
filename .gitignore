@@ -2,7 +2,8 @@
 *.swp
 *.pt
 
-runs/
+*runs/
+logs/
 
 __pycache__/
 
