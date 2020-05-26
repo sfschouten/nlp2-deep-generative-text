@@ -146,20 +146,20 @@ if __name__ == "__main__":
          
     
     # Model 2 (vanilla)
-    #config.model = 's-vae'
-    #model = train_model(config)
-    #experiment(model)
+    config.model = 's-vae'
+    model = train_model(config)
+    experiment(model)
 
     # Model 3 (best PP)
-    #config.wdropout_prob = 0.55
-    #config.mu_forcing_beta = 1
-    #model = train_model(config)
-    #experiment(model)
+    config.wdropout_prob = 0.55
+    config.mu_forcing_beta = 1
+    model = train_model(config)
+    experiment(model)
 
     # Model 4 (best NLL)
-    #config.mu_forcing_beta = 25
-    #model = train_model(config)
-    #experiment(model)
+    config.mu_forcing_beta = 25
+    model = train_model(config)
+    experiment(model)
 
     # Model 1
     config.model = 'rnnlm'

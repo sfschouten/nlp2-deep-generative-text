@@ -29,11 +29,10 @@ from sentence_vae import SentenceVAE
 from train import *
 
 if __name__ == "__main__":
-    # Parse training configuration
+    
     parser = argparse.ArgumentParser()
 
     # Model params
-    parser.add_argument('--embed_dim', type=int, default=300, help="The amount of dimensions of the word embeddings.")
     parser.add_argument('--hidden_dim', type=int, default=512, help="The amount of hidden dimensions.")
    
     parser.add_argument('--freebits_lambda', type=float, default=0, help="")
@@ -59,10 +58,6 @@ if __name__ == "__main__":
     config = parser.parse_args()
     config.model = 's-vae'
 
-    torch.manual_seed(42)
-    numpy.random.seed(42)
-    random.seed(42)
-    
     def train_model(config):
         # summarywriter 
         logdir = logloc(dir_name=config.sw_log_dir, comment="")
@@ -90,9 +85,9 @@ if __name__ == "__main__":
     #    train_model(config)
     #config.freebits_lambda = 0
 
-    for beta in [20]:
-        config.mu_forcing_beta = beta
-        train_model(config)
+    #for beta in [6,7,8,9,10]:
+    #    config.mu_forcing_beta = beta
+    #    train_model(config)
 
     #for wdrop in [0.4, 0.45, 0.5, 0.55, 0.6]:
     #    config.wdropout_prob = wdrop

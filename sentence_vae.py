@@ -38,9 +38,9 @@ class SentenceVAEEncoder(nn.Module):
         """
         Args:
             x : vectors that represent the sentence     S x B x E
-
+            l : the lengths of those sentences.
         Returns:
-            
+            The mean and stdev to parameterize our standard Gaussian with. 
         """
 
         packed = nn.utils.rnn.pack_padded_sequence(x, l, enforce_sorted=False)
@@ -142,7 +142,7 @@ class SentenceVAE(nn.Module):
         """
         Args:
             x : vectors that represent the sentence     S x B x E
-
+            l : the lengths of the sentences
         Returns:
             
         """
@@ -224,24 +224,23 @@ class SentenceVAE(nn.Module):
             y = self.decoder(x, l, h = z)                   # S x B*K x V
             V = y.shape[2] # vocabulary
 
-            # calculate NLL
+            # calculate conditional NLL
             y = y.view(-1, V)                               # S*B*K x V
             t = t.reshape(-1)                               # S*B*K
             nll = F.nll_loss(y, t, reduction='none')        # S*B*K
 
-            # calculate log likelihood of sentences ( p(x|z_k) )
+            # log likelihood of sentences ( p(x|z_k) )
             ll = -nll.view(S, B, K).sum(dim=0)              # B x K
            
             # p(x,z) = p(x|z) p(z)
             log_joint = ll + log_p_z
             ll = ll.mean(dim=1)
 
-            # add -log(K) to get mean instead of sum 
+            # add -log(K) to get logmeanexp 
             log_marginal = torch.logsumexp(log_joint - log_q_z - math.log(K), 1)    # B
 
             kl = dist.kl.kl_divergence(q, prior)
             kl = kl.mean(dim=1).sum(dim=1) 
-            #kl = 0
 
             return -log_marginal, -ll, kl 
 

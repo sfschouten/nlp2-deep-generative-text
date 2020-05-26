@@ -46,7 +46,7 @@ class RNNLM(nn.Module):
 
 
     def get_additional_losses(self):
-        return {}
+        return {} # an RNNLM has no additional losses.
 
 
     def _sample(self, sample_f, embedding, max_len, x, h, eos_idx):
@@ -54,9 +54,10 @@ class RNNLM(nn.Module):
         Forward the module, while feeding the output at each timestep back
         in as input for the following timestep.
         Args:
-            x : the index of the first input. (int)
+            sample_f: the function with which we determine how to go from the logits to the next word.
             embedding : the embedding used for the input.
             max_len : the maximum length of the output. 
+            x : the index of the first input. (int)
             h : the initial hidden state. Default: zero vector.
             eos_idx : the index of the end-of-sequence token in the embedding. Default: 2.
         """
@@ -99,11 +100,18 @@ class RNNLM(nn.Module):
 
 
     def greedy_sample(self, embedding, max_len, x = None, h = None, eos_idx = 2):
+        """
+        Uses argmax to obtain the next word'd index from the logits.
+        Thereby implementing greedy sampling.
+        """
         sample_f = lambda x : x.softmax(dim=1).argmax(dim=1)
         return self._sample(sample_f, embedding, max_len, x, h, eos_idx)
 
 
     def temperature_sample(self, embedding, max_len, temperature=2, x = None, h = None, eos_idx = 2):
+        """
+        Random sampling with a temperature parameter as control.
+        """
         def sample_f(x):
             device = x.device
             probs = (x*temperature).softmax(dim=1).squeeze().cpu().detach().numpy()
@@ -114,7 +122,9 @@ class RNNLM(nn.Module):
 
     def multi_sample_estimates(self, x, l, t, K=4):
         """
-
+        Obtains multi sample estimates for the relevant metrics.
+        For the RNNLM the marginal likelihood is what we model directly.
+        (Also see multi_sample_estimates in SentenceVAE.)
         """
         with torch.no_grad():
             S, B, E = x.shape

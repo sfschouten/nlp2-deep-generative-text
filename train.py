@@ -43,7 +43,10 @@ def load_model(label, config):
     return torch.load(name)
 
 
-def test_model(model, embedding, criterion, valid_iter, device):
+def test_model(model, embedding, criterion, iter_, device):
+    """
+    Tests/Validates model on supplied iterator.
+    """
     with torch.no_grad():
         model.eval()
         kl = 0
@@ -51,13 +54,11 @@ def test_model(model, embedding, criterion, valid_iter, device):
         marg = 0
         lens = 0
         additional_losses = model.get_additional_losses()
-        for step, batch in enumerate(valid_iter):
-            
+        for step, batch in enumerate(iter_):
             batch_text, txt_len = batch.text
             batch_target, tgt_len = batch.target
             batch_text = embedding(batch_text.to(device))
             batch_target = batch_target.to(device)
-
             batch_output = model(batch_text, txt_len)
            
             K = 10
@@ -84,7 +85,7 @@ def test_model(model, embedding, criterion, valid_iter, device):
     for loss_name, additional_loss in model.get_additional_losses().items():
         additional_losses[loss_name] /= step
 
-    nr_samples = (step * valid_iter.batch_size)
+    nr_samples = (step * iter_.batch_size)
     nll_per_sample = nll / nr_samples 
     kl_per_sample = kl / nr_samples
     return nll_per_sample, pp, kl_per_sample, additional_losses 
@@ -118,18 +119,20 @@ def train(config, sw):
 
     # create embedding layer
     embedding = nn.Embedding.from_pretrained(vocab.vectors).to(device)
+    EMBED_DIM = 300
+
 
     num_classes = vocab.vectors.shape[0]
     # Initialize the model that we are going to use
     if config.model == "rnnlm":
         model = RNNLM(
-            config.embed_dim, 
+            EMBED_DIM,
             config.hidden_dim,
             num_classes
         )
     elif config.model == "s-vae":
         model = SentenceVAE(
-            config.embed_dim,
+            EMBED_DIM,
             config.hidden_dim,
             num_classes,
             fb_lambda = config.freebits_lambda, 
@@ -208,7 +211,8 @@ def train(config, sw):
         sw.add_scalar('Valid/NLL', epoch_nll, global_step)
         sw.add_scalar('Valid/Perplexity', epoch_pp, global_step)
         sw.add_scalar('Valid/KL', epoch_kl, global_step)
-        # below will also have kl but not multisample
+
+        # the additional_loss below will also have kl but not multisample
         for loss_name, additional_loss in additional_losses.items():
             sw.add_scalar('Valid/'+loss_name, additional_loss, global_step)
       
@@ -259,23 +263,22 @@ if __name__ == "__main__":
 
     # Model params
     parser.add_argument('--model', choices=['rnnlm', 's-vae'], default='rnnlm', help="Which model to train.")
-    parser.add_argument('--embed_dim', type=int, default=300, help="The amount of dimensions of the word embeddings.")
     parser.add_argument('--hidden_dim', type=int, default=512, help="The amount of hidden dimensions.")
    
     parser.add_argument('--freebits_lambda', type=float, default=0, help="")
     parser.add_argument('--wdropout_prob', type=float, default=1, help="")
     parser.add_argument('--mu_forcing_beta', type=float, default=0, help="")
 
-    # Training params
-    parser.add_argument('--use_bptt', type=bool, default=False, help='')
-    parser.add_argument('--seq_len', type=int, default=int(25), help='The length of the sequences to train on.')
-    
+    # Training params    
     parser.add_argument('--batch_size', type=int, default=32, help='Number of samples to process in a batch')
-    parser.add_argument('--device', type=str, default="cuda", help="Training device 'cpu' or 'cuda:0'")
+    parser.add_argument('--device', type=str, default="cuda", help="Training device 'cpu' or 'cuda'")
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate')
     parser.add_argument('--learning_rate_decay', type=float, default=0.95, help='Learning rate decay fraction')
     parser.add_argument('--train_steps', type=int, default=int(14000), help='Number of training steps')
     parser.add_argument('--max_norm', type=float, default=5.0, help='Gradient clipping maximum norm.')
+
+    parser.add_argument('--use_bptt', type=bool, default=False, help='')
+    parser.add_argument('--seq_len', type=int, default=int(25), help='The length of the sequences to train on.')
 
     # Misc params
     parser.add_argument('--print_every', type=int, default=50, help='How often to print training progress')
@@ -283,9 +286,7 @@ if __name__ == "__main__":
     parser.add_argument('--save_file', type=str, default='model.pt', help='Filename under which to store the model.')
 
     config = parser.parse_args()
-
-    pp = pprint.PrettyPrinter(indent=4)
-    pp.pprint(config)
+    print(config)
 
     # summarywriter 
     comment = "" 
@@ -303,5 +304,5 @@ if __name__ == "__main__":
     sw.add_hparams(config_dict, metrics)
     sw.close()
 
-    save_model("last", model, config)
+    #save_model("last", model, config)
 
